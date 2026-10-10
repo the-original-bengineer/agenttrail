@@ -16,6 +16,13 @@
 
 </div>
 
+## OpenCode fork
+
+This fork adds a metadata-only OpenCode plugin to Kitchen, alongside the existing
+Codex and Claude observers. It is installed by the sibling `code-harness`
+checkout, not by the upstream npm commands below. No fork release has been
+published. See [OpenCode setup and privacy](docs/kitchen/OPENCODE.md).
+
 Agenttrail watches your coding agents' available activity and turns it into a live view of their work. See which part of a project is changing, what tasks an agent has reported, and where it needs your attention—without piecing together several terminal windows.
 
 Your agents keep running in tools such as Codex and Claude Code. Agenttrail observes local files, plans and supported agent events; it visualizes that evidence for you. It does not run the agents, assign their work or decide that a task is finished.

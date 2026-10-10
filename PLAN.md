@@ -172,6 +172,33 @@ files: [bin/**, public/**]
 tech: optional kitchen package, local observers, workflow model and Three.js renderer
 files: [packages/kitchen/**]
 links: [plan-reader, runs, map]
+- [x] See connection freshness and work across watched projects {#kitchen-live-overview}
+  by: opencode
+  from: agent
+  tech: observed provider health, metadata-only session summaries and multi-root overview; distinguish quiet observations from broken connections
+- [x] See reported checks and supported token usage {#kitchen-evidence-usage}
+  by: opencode
+  from: agent
+  tech: correlated verification metadata, source-backed numeric usage and replay-safe accounting; unsupported values stay unknown
+- [x] Choose whether to retain private local activity history {#kitchen-private-history}
+  by: opencode
+  from: agent
+  tech: off-by-default allowlisted history, retention/size bounds, safe atomic storage and explicit deletion
+- [x] Verify and review the expanded dashboard before installation {#kitchen-observability-acceptance}
+  by: opencode
+  from: agent
+  tech: unit/API/UI-wiring/packed-package checks pass; correctness and security reviews closed after owner-capability fix. Browser tools unavailable and owner explicitly waived functional browser proof. Owner authorised commit, push and home installation separately.
+- [x] Observe OpenCode without exporting private conversation text {#kitchen-opencode}
+  by: opencode
+  from: agent
+  tech: fork-owned metadata plugin, authenticated loopback events, native todo status and packaged integration tests
+- [x] Install the fork safely alongside the coding harness {#kitchen-harness-install}
+  by: opencode
+  from: agent
+  tech: locked source snapshot, explicit foreground launcher and managed profiles; no published release yet
+- [ ] Check the installed OpenCode dashboard in a browser {#kitchen-opencode-browser}
+  by: opencode
+  tech: owner chose manual dashboard review after accepting deterministic installation/event checks; browser tools were unavailable. Installed CLI and real OpenCode session creation/deletion through the managed shim pass in a synthetic home. No automated UI verification claimed.
 - [ ] Preserve native todos when Map reports newer activity {#kitchen-native-plan-precedence}
   tech: Projects.enrich currently lets a newer general Map event replace a confirmed native task list with empty board todos and withdraw its dishes.
 - [ ] Confirm plan updates before serving completed dishes {#kitchen-plan-acknowledgements}
@@ -273,6 +300,9 @@ files: [README.md, docs/**, package.json, CONTRIBUTING.md, examples/**, .github/
   tech: README definition, sentence-case headings, npm metadata, GitHub description and topics
 
 ## decisions
+- 2026-10-11: Security review found that loopback-only access does not isolate retained history from other local OS accounts. Protect history reads, settings, deletion and summaries with a separate owner capability, delivered through a private handoff file and in-memory browser header. Keep tokens out of public bootstrap/events, CLI output and process arguments. The owner approved this fix and explicitly waived unavailable functional-browser testing; deterministic UI/API/package checks remain required.
+- 2026-10-11: Extend the existing Kitchen for six owner-approved observability features without adding a service or runtime dependency. Keep summaries metadata-only, verification separate from completion, unsupported usage/cost unknown, and history explicitly opt-in with private bounded storage. Preserve the current installation until the owner separately approves replacing it.
+- 2026-10-10: Maintain OpenCode support in the owner's fork rather than disguising it as another provider or patching npm downloads. The sibling code-harness installs a verified local build until a separate fork release is authorised. Send metadata only; task labels are generic, native task status remains authoritative, and idle does not mean the task shipped. Keep the dashboard explicit and foreground; do not change agent authentication or install a background service.
 - 2026-09-09: Review the public repository for concrete reliability and setup issues, recording reproducible findings separately from planned features. Describe Agenttrail as the local observability project with two views: Agenttrail Map for project structure and activity, and Agenttrail Kitchen for native tasks and role contributions. Document their current independent services and differing provider support rather than implying a unified event backend or agent orchestration.
 - 2026-09-08: Publish Kitchen to npm now that the owner has restored registry login. Use alpha.3 for the refreshed package README instead of changing the existing alpha.2 archive; keep the experimental version explicit and use the latest tag so npx agenttrail-kitchen . works. Verify the exact public package from a fresh consumer environment, then publish matching GitHub release assets and setup instructions. The owner chose browser setup first; no editor extension is being added.
 - 2026-09-08: Audit the downloadable public Kitchen release from an isolated consumer install, verify real repo observation and adapter behavior, fix launch gaps, and refresh the root README with Kitchen screenshots and exact install/support instructions. No editor extension currently exists; clarify whether the owner wants one built or wants the working browser setup documented. Keep unknown integration status explicit.

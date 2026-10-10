@@ -1,5 +1,5 @@
 // Shared presentation rules. These never assign or complete real work.
-export const providerName={codex:'Codex',claude:'Claude',cursor:'Cursor'};
+export const providerName={codex:'Codex',claude:'Claude',cursor:'Cursor',opencode:'OpenCode'};
 export const needsAttention=s=>['permission','input','error'].includes(s.state)&&!s.ended;
 export const isWorking=s=>s.roleId?s.workingCount>0:!s.ended&&s.freshness!=='quiet'&&['reading','writing','executing','working'].includes(s.state);
 export const isCurrent=s=>needsAttention(s)||isWorking(s);

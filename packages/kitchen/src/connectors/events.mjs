@@ -1,6 +1,7 @@
 import { clean } from '../runtime/crew.mjs';
 import path from 'node:path';
 import {desktopWork,directWork} from './desktop-events.mjs';
+import { checkCategory, toolCheck, reportedCheck, usageValues, evidenceKey } from '../evidence.mjs';
 
 export const taskList=items=>Array.isArray(items)?items.slice(0,24).filter(t=>t&&typeof(t.content||t.step||t.subject||t.title)==='string'&&['pending','in_progress','completed'].includes(t.status)).map(t=>({...((typeof t.id==='string'||typeof t.id==='number')?{id:clean(String(t.id),100)}:{}),title:clean(t.content||t.step||t.subject||t.title,180),status:t.status})):undefined;
 
@@ -44,7 +45,8 @@ export function normalizeHook(provider, raw, at=Date.now()) {
   const kind=({sessionstart:'session-start',sessionend:'session-end',userpromptsubmit:'turn-start',beforesubmitprompt:'turn-start',pretooluse:'tool-start',posttooluse:'tool-end',posttoolusefailure:'tool-end',permissionrequest:'permission',stop:'turn-end',subagentstart:'session-start',subagentstop:'turn-end',beforefileread:'tool-start',beforereadfile:'activity',afterfileedit:'activity',beforeshellexecution:'activity',aftershellexecution:'tool-end',aftermcpexecution:'activity'})[key];
   let notification=key==='notification' ? (raw.notification_type==='permission_prompt' ? 'permission' : raw.notification_type==='idle_prompt' ? 'input' : null) : null;
   if(!kind&&!notification) return null;
-  return {provider,sessionId:clean(sessionId,200),parentId:child?clean(parent,200):null,cwd,at,source:'hook',kind:kind||notification,turnId:raw.generation_id || raw.turn_id,toolId:raw.tool_use_id || raw.tool_call_id,tool:clean(raw.tool_name || (key==='afterfileedit'?'Write':['beforefileread','beforereadfile'].includes(key)?'Read':['beforeshellexecution','aftershellexecution'].includes(key)?'Shell':''),80),file:clean(raw.tool_input?.file_path || raw.tool_input?.path || raw.file_path,500),...(key==='posttooluse'&&!['error','failed'].includes(raw.status)?taskResult(raw.tool_name,raw.tool_input,raw.tool_response??raw.tool_output):{}),error:key==='posttoolusefailure'||raw.status==='error'||raw.status==='failed',id:clean(raw.office_event_id,200)};
+  const verification=['posttooluse','posttoolusefailure','aftershellexecution'].includes(key)?reportedCheck(toolCheck(raw.tool_name||'Shell',raw.tool_input||{command:raw.command}),provider,{failed:key==='posttoolusefailure'||['error','failed'].includes(raw.status),interrupted:raw.tool_response?.interrupted===true}):undefined;
+  return {provider,sessionId:clean(sessionId,200),parentId:child?clean(parent,200):null,cwd,at,source:'hook',kind:kind||notification,turnId:raw.generation_id || raw.turn_id,toolId:raw.tool_use_id || raw.tool_call_id,tool:clean(raw.tool_name || (key==='afterfileedit'?'Write':['beforefileread','beforereadfile'].includes(key)?'Read':['beforeshellexecution','aftershellexecution'].includes(key)?'Shell':''),80),file:clean(raw.tool_input?.file_path || raw.tool_input?.path || raw.file_path,500),...(verification?{verification}:{}),...(key==='posttooluse'&&!['error','failed'].includes(raw.status)?taskResult(raw.tool_name,raw.tool_input,raw.tool_response??raw.tool_output):{}),error:key==='posttoolusefailure'||raw.status==='error'||raw.status==='failed',id:clean(raw.office_event_id,200)};
 }
 
 export function codexEvents(row, meta, fileId) {
@@ -52,11 +54,17 @@ export function codexEvents(row, meta, fileId) {
   if(row.type==='event_msg'&&p.type==='task_started')meta.turnId=p.turn_id;
   const base={provider:'codex',sessionId:meta.id,cwd:meta.cwd,parentId:meta.parentId,source:'log',at,id,turnId:p.turn_id||meta.turnId};
   if(row.type==='event_msg') {
+    if(p.type==='token_count'){
+      const tokens=p.info?.total_token_usage,values=usageValues({input:tokens?.input_tokens,output:tokens?.output_tokens,cached:tokens?.cached_input_tokens,reasoning:tokens?.reasoning_output_tokens});
+      return values?[{...base,id:`${id}:${evidenceKey(JSON.stringify(values))}`,kind:'usage',usage:{mode:'cumulative',key:evidenceKey(meta.id),values}}]:[];
+    }
     if(p.type==='item_completed'){
       if(typeof p.item?.id!=='string'||(p.thread_id&&p.thread_id!==meta.id))return [];
       const work=desktopWork(p.item);if(!work)return [];
       if(work.file&&typeof p.item.cwd==='string'&&path.isAbsolute(p.item.cwd))work.file=path.resolve(p.item.cwd,work.file);
-      return [{...base,id:`${fileId}:item:${p.item.id}`,kind:'observation',work:{...work,completed:true},at:Number(p.completed_at_ms)||at}];
+      const category=String(p.item.type).toLowerCase()==='commandexecution'?checkCategory(p.item.command):null;
+      const verification=reportedCheck(category,'codex',{exitCode:p.item.exit_code,failed:p.item.status==='failed',interrupted:p.item.status==='interrupted'});
+      return [{...base,id:`${fileId}:item:${p.item.id}`,kind:'observation',work:{...work,completed:true},...(verification?{verification}:{}),at:Number(p.completed_at_ms)||at}];
     }
     const kind=({task_started:'turn-start',task_complete:'turn-end',turn_aborted:'interrupted'})[p.type];
     if(kind) return [{...base,kind}];
@@ -84,8 +92,9 @@ export function claudeEvents(row,fileId,context={pending:new Map()}) {
   content.forEach((c,i)=>{
     const e={...base,id:`${base.id}:${i}`};
     if(c.type==='tool_use') events.push({...e,kind:'tool-start',tool:c.name,toolId:c.id,file:c.input?.file_path || c.input?.path,tasks:c.name==='TodoWrite'?taskList(c.input?.todos):undefined});
-    if(c.type==='tool_use'&&['TaskCreate','TaskUpdate','TaskGet','TaskList'].includes(c.name)){context.pending.set(c.id,{name:c.name,input:{taskId:c.input?.taskId,subject:clean(c.input?.subject,180),status:c.input?.status}});if(context.pending.size>64)context.pending.delete(context.pending.keys().next().value);}
-    if(c.type==='tool_result'){const pending=context.pending.get(c.tool_use_id);context.pending.delete(c.tool_use_id);events.push({...e,kind:'tool-end',toolId:c.tool_use_id,error:!!c.is_error,...(pending&&!c.is_error?taskResult(pending.name,pending.input,c.content):{})});}
+    const category=c.type==='tool_use'?toolCheck(c.name,c.input):null;
+    if(c.type==='tool_use'&&(['TaskCreate','TaskUpdate','TaskGet','TaskList'].includes(c.name)||category)){context.pending.set(c.id,{name:c.name,category,input:{taskId:c.input?.taskId,subject:clean(c.input?.subject,180),status:c.input?.status}});if(context.pending.size>64)context.pending.delete(context.pending.keys().next().value);}
+    if(c.type==='tool_result'){const pending=context.pending.get(c.tool_use_id);context.pending.delete(c.tool_use_id);const verification=reportedCheck(pending?.category,'claude',{failed:!!c.is_error});events.push({...e,kind:'tool-end',toolId:c.tool_use_id,error:!!c.is_error,...(verification?{verification}:{}),...(pending&&!c.is_error?taskResult(pending.name,pending.input,c.content):{})});}
   });
   if(row.type==='user' && content.some(c=>c.type==='text') && !content.some(c=>c.type==='tool_result')) events.push({...base,kind:'turn-start'});
   if(row.type==='assistant' && row.message?.stop_reason==='end_turn') events.push({...base,id:base.id+':end',kind:'turn-end'});

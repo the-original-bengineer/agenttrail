@@ -17,8 +17,9 @@ try{
   const installed=path.join(fixture,'node_modules/agenttrail-kitchen');
   const pkg=JSON.parse(await fs.readFile(path.join(installed,'package.json'),'utf8'));
   assert.equal(pkg.license,'MIT');
-  assert.equal(pkg.private,undefined);
+   assert.equal(pkg.private,true,'The harness fork must not accidentally publish under the upstream npm name');
   assert.deepEqual(Object.keys(pkg.dependencies||{}),[]);
+  assert.match(await fs.readFile(path.join(installed,'docs/OBSERVABILITY.md'),'utf8'),/History is \*\*disabled by default\*\*/);
   for(const excluded of ['test','scripts','concepts','recordings','.office','.runs','public/src']){
     await assert.rejects(fs.access(path.join(installed,excluded)),{code:'ENOENT'});
   }
@@ -28,7 +29,7 @@ try{
   const launch=args=>run(npm,['exec','--offline','--yes','--','agenttrail-kitchen',...args],{cwd:fixture,timeout:15000});
   assert.match((await launch(['--help'])).stdout,/Agenttrail Kitchen/);
   const first=path.join(fixture,'first repo'),second=path.join(fixture,"repo with spaces ' and $(literal)");
-  const stateDir=path.join(fixture,'state'),observerHome=path.join(fixture,'empty-observer-home');
+   const observerHome=path.join(fixture,'empty-observer-home'),stateDir=path.join(observerHome,'.local/state/code-harness/agenttrail');
   await Promise.all([first,second,observerHome].map(p=>fs.mkdir(p)));
   const {startOffice}=await import(pathToFileURL(path.join(installed,'src/server.mjs')));
   service=await startOffice({roots:[first],home:observerHome,stateDir,port:0});
@@ -41,6 +42,14 @@ try{
   const initial=await fetch(service.url+'/api/state').then(r=>r.json());
   assert.equal(initial.app,'agenttrail-kitchen');
   assert.deepEqual(initial.executors,[]);
+  assert.equal(initial.history.enabled,false);
+  assert.equal(initial.overview.length,1);
+  const bootstrap=await fetch(service.url+'/api/bootstrap').then(r=>r.json());
+  const registration=JSON.parse(await fs.readFile(path.join(stateDir,'server.json'))),historyHeaders={'x-history-token':registration.dashboardToken};
+  assert.equal((await fetch(service.url+'/api/history')).status,401);
+  assert.ok(!JSON.stringify(bootstrap).includes(registration.dashboardToken));
+  const post=async(endpoint,data)=>{const response=await fetch(service.url+endpoint,{method:'POST',headers:{'content-type':'application/json','x-office-token':bootstrap.token,...historyHeaders},body:JSON.stringify(data)});assert.equal(response.status,200);return response.json();};
+  await post('/api/history/settings',{enabled:true,retentionDays:3});
   // Synthetic provider fixtures, confined to the temporary consumer install.
   const logDir=path.join(observerHome,'.codex/sessions/2024/01/02');
   await fs.mkdir(logDir,{recursive:true});
@@ -84,7 +93,24 @@ try{
   assert.ok(writing.orders[0].contributors.some(c=>c.chefId===buildChef.id));
   await fs.appendFile(log,row('response_item',{type:'function_call_output',call_id:'build',output:'done'})+plan('completed')+row('event_msg',{type:'task_complete',turn_id:'check'}));
   const done=await nextState(s=>s.orders[0]?.status==='completed'&&s.executors[0]?.state==='complete');
-  assert.ok(done.tables.some(t=>t.completedIds.includes(reading.orders[0].id)),'Completed dish reaches its table');
+   assert.ok(done.tables.some(t=>t.completedIds.includes(reading.orders[0].id)),'Completed dish reaches its table');
+   const {createOpenCodeObserver}=await import(pathToFileURL(path.join(installed,'src/opencode/core.mjs')));
+   const bridge=createOpenCodeObserver({home:observerHome,cwd:second});
+   bridge.observe({type:'session.status',properties:{sessionID:'packed-open-code',status:{type:'busy'}}});
+    bridge.observe({type:'todo.updated',properties:{sessionID:'packed-open-code',todos:[{content:'never-show-this',status:'in_progress'}]}});
+    bridge.observe({type:'message.updated',properties:{info:{id:'msg_packed',sessionID:'packed-open-code',role:'assistant',time:{completed:Date.now()},tokens:{input:50,output:10,reasoning:2,cache:{read:20,write:0}},structured:'never-show-this'}}});
+   bridge.observe({type:'session.status',properties:{sessionID:'packed-open-code',status:{type:'idle'}}});
+   await bridge.settled();bridge.dispose();
+   const observed=await nextState(s=>s.executors.some(e=>e.provider==='opencode'&&e.state==='input'));
+    assert.equal(observed.executors.find(e=>e.provider==='opencode').sessionTasks[0].title,'Task 1');
+    assert.equal(observed.overview.find(p=>p.id===second).sessions.find(s=>s.provider==='opencode').usage.input,50);
+    const history=await fetch(service.url+'/api/history?limit=200',{headers:historyHeaders}).then(r=>r.json());
+    assert.ok(history.records.some(record=>record.provider==='opencode'&&record.kind==='usage'));
+    for(const privateText of ['never-show-this',second,'Check the installed kitchen'])assert.ok(!JSON.stringify(history.records).includes(privateText));
+    await post('/api/history/clear',{});
+    assert.equal((await fetch(service.url+'/api/history',{headers:historyHeaders}).then(r=>r.json())).records.length,0);
+    await post('/api/history/settings',{enabled:false,retentionDays:3});
+   assert.ok((await fetch(service.url+'/build/app.js').then(r=>r.text())).includes('OpenCode'),'Bundled UI includes the real provider identity');
   // File observation works independently of native todos and never writes to the repo.
   const changed=path.join(second,'observed-file.txt');
   await fs.writeFile(changed,'A consumer-created file.\n');
@@ -97,7 +123,7 @@ try{
   assert.equal(demo.searchParams.has('project'),false);
   assert.deepEqual(await fs.readdir(first),[]);
   assert.deepEqual(await fs.readdir(second),[]);
-  console.log('Packed kitchen verified: offline install, installed CLI, local assets, planless repo attachment, fresh log activity over SSE, one session across multiple chefs, shared dish completion, file observation and labeled example launch.');
+   console.log('Packed kitchen verified: offline install, CLI/assets, Codex collaboration, OpenCode metadata/usage, project overview, opt-in private history/deletion, native tasks, file observation and example launch.');
 }finally{
   events?.abort();
   await service?.close();

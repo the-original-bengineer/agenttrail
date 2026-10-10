@@ -1,12 +1,13 @@
 {
   "name": "agenttrail-kitchen",
-  "version": "0.1.0-alpha.3",
+  "version": "0.1.0-alpha.3-opencode.2",
+  "private": true,
   "type": "module",
   "description": "An experimental local 3D kitchen view for Agenttrail. Watch coding agents contribute to shared tasks.",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sodiumsun/agenttrail.git",
+    "url": "git+https://github.com/the-original-bengineer/agenttrail.git",
     "directory": "packages/kitchen"
   },
   "homepage": "https://github.com/sodiumsun/agenttrail/tree/main/docs/kitchen",
@@ -21,6 +22,7 @@
     "public/favicon.svg",
     "public/paper.svg",
     "docs/THIRD-PARTY.md",
+    "docs/OBSERVABILITY.md",
     "docs/licenses",
     "LICENSE",
     "README.md"

@@ -5,6 +5,7 @@ import os from 'node:os';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {startOffice} from '../src/server.mjs';
+import { readPrivateJson, writeDashboardFile } from '../src/private-state.mjs';
 
 const appRoot=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 export function parseArgs(args,cwd=process.cwd()){
@@ -27,6 +28,16 @@ export function parseArgs(args,cwd=process.cwd()){
 export function liveUrl(base,project){const url=new URL(base);url.searchParams.set('project',project);url.searchParams.set('mode','live');return url.href;}
 function launchUrl(base,project,example){const url=new URL(liveUrl(base,project));if(example){url.searchParams.set('mode','demo');url.searchParams.delete('project');}return url.href;}
 function openBrowser(url){const bin=process.platform==='darwin'?'open':process.platform==='win32'?'cmd':'xdg-open',params=process.platform==='win32'?['/c','start','',url]:[url];const child=spawn(bin,params,{stdio:'ignore',detached:true});child.on('error',()=>{});child.unref();}
+export async function dashboardLaunchFile(url,stateDir,home=os.homedir()){
+  const registration=await readPrivateJson({stateDir,home,name:'server.json',maxBytes:4096});
+  if(!/^[a-f0-9]{48}$/.test(registration?.dashboardToken||''))throw new Error('Restart Kitchen to authorize private history.');
+  const target=new URL(url);
+  if(target.origin!==`http://127.0.0.1:${registration.port}`)throw new Error('Dashboard launch does not match the private registration.');
+  target.hash=new URLSearchParams({history:registration.dashboardToken}).toString();
+  const escaped=target.href.replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  return writeDashboardFile({stateDir,home,text:`<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Open your Kitchen</title><meta http-equiv="refresh" content="0;url=${escaped}"><a href="${escaped}">Open your local dashboard</a>`});
+}
+async function openDashboard(url,stateDir){try{openBrowser(await dashboardLaunchFile(url,stateDir));}catch{console.error('Private history needs a safe state directory and a restarted Kitchen. Open the printed URL for live activity only.');openBrowser(url);}}
 export async function main(args=process.argv.slice(2)){
   const options=parseArgs(args);
   if(options.help){console.log('Agenttrail Kitchen (experimental)\n  agenttrail-kitchen .             Watch the current repo\n  agenttrail-kitchen /path/to/repo  Open any working folder\n  --example                       Open the labeled example view\n  --project /path (repeatable)\n  --saved                         Reopen saved folders\n  --port 4780\n  --no-open\n  --state-dir /absolute/state\n\nNo PLAN.md, Agenttrail install, or repo changes required. A running kitchen is reused and receives the requested folders.');return;}
@@ -45,12 +56,12 @@ export async function main(args=process.argv.slice(2)){
       if(existing?.app!=='agenttrail-kitchen')throw new Error('The registered service needs to be restarted with the updated kitchen before attaching a repo.');
       const result=await fetch(base+'/api/attach',{method:'POST',headers:{authorization:`Bearer ${registration.hookToken}`,'content-type':'application/json'},body:JSON.stringify({projects:unique}),signal:AbortSignal.timeout(15000),redirect:'error'});
       const attached=await result.json();if(!result.ok)throw new Error(attached.error||'Could not attach this repo to the kitchen.');
-      const url=launchUrl(base,attached.projects[0],options.example);console.log(`Kitchen updated: ${url}\nWatching ${attached.projects.map(p=>path.basename(p)).join(', ')}. Existing agents keep running.`);if(open)openBrowser(url);return;
+      const url=launchUrl(base,attached.projects[0],options.example);console.log(`Kitchen updated: ${url}\nWatching ${attached.projects.map(p=>path.basename(p)).join(', ')}. Existing agents keep running.`);if(open)await openDashboard(url,stateDir);return;
     }
   }
   await fs.writeFile(path.join(stateDir,'projects.json'),JSON.stringify(unique),{mode:0o600});
   const office=await startOffice({roots:unique,home:os.homedir(),stateDir,port});const url=launchUrl(office.url,unique[0],options.example);
-  console.log(`Agenttrail Kitchen is ready: ${url}\nWatching ${unique.map(p=>path.basename(p)).join(', ')}. Local metadata only.\nCodex and Claude observations are automatic when available. Use Connect agents for provider hooks.`);if(open)openBrowser(url);
+  console.log(`Agenttrail Kitchen is ready: ${url}\nWatching ${unique.map(p=>path.basename(p)).join(', ')}. Local metadata only.\nCodex and Claude observations are automatic when available. Use Connect agents for provider hooks.`);if(open)await openDashboard(url,stateDir);
   for(const signal of ['SIGINT','SIGTERM'])process.once(signal,async()=>{await office.close();process.exit(0);});
 }
 if(process.argv[1]&&await fs.realpath(process.argv[1]).catch(()=>null)===fileURLToPath(import.meta.url))main().catch(error=>{console.error(error.message);process.exitCode=1;});

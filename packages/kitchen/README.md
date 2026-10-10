@@ -1,5 +1,13 @@
 # Agenttrail Kitchen
 
+**Fork preview:** this checkout adds OpenCode support as
+`0.1.0-alpha.3-opencode.2`. It is not published on npm. The sibling code-harness
+installs a checksum-verified local build and configures the plugin. Run
+`make agenttrail` there, then `agenttrail /path/to/repo`. The upstream npm
+instructions below install the original preview **without OpenCode support**.
+See [OpenCode setup](https://github.com/the-original-bengineer/agenttrail/blob/main/docs/kitchen/OPENCODE.md)
+for coverage and privacy limits.
+
 [![Agenttrail Kitchen overview](https://raw.githubusercontent.com/sodiumsun/agenttrail/main/docs/kitchen/overview.jpg)](https://github.com/sodiumsun/agenttrail/tree/main/docs/kitchen)
 
 Your coding agents, cooking together. Kitchen is the experimental 3D observability view in [Agenttrail](https://github.com/sodiumsun/agenttrail), a local, open-source project for following AI coding agents' work. It observes available activity from agents running in their existing tools and visualizes their contributions as a shared cooking scene.
@@ -24,11 +32,19 @@ To explore without running an agent, add `--example` or click **Example**, then 
 
 ## What connects
 
+Choose **Observability** for watched-project totals, actual session summaries,
+provider observation freshness, reported checks, supported token usage, and
+optional private local history. History is off by default. OpenCode completed
+messages and Codex cumulative counters supply token metadata; Claude usage and
+monetary cost remain unknown. A successful tool is not proof that tests passed
+or a deliverable shipped. See [observability details](docs/OBSERVABILITY.md).
+
 | Provider | Current preview support |
 | --- | --- |
 | Codex | Experimental local log adapter; exercised in the recorded collaboration. Available lifecycle, tool and native plan metadata drive the view. |
 | Claude Code | Experimental local logs and optional additive hooks; exercised with Codex, including native task acknowledgements. |
 | Cursor | Optional hooks with automated adapter tests; native live validation is still pending. |
+| OpenCode (this fork) | Metadata plugin: session/tool/permission activity and authoritative native todo state. Generic task labels; requires a restarted managed OpenCode session and the local dashboard. |
 
 Local file watching remains available without native todos. Missing tasks or progress stay unknown. Remote sessions whose logs are not on this machine are not automatically visible. Explicit artifact/revision/receipt metadata is required for reliable plate transfers; ordinary file reads do not establish a handoff.
 

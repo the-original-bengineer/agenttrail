@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { UsageLedger, evidenceKey, reportedCheck } from '../evidence.mjs';
 
 export const clean = (v, max = 180) => typeof v === 'string' ? v.replace(/[\x00-\x1f]/g, ' ').slice(0, max) : '';
 export const within = (file, root) => file === root || file.startsWith(root + path.sep);
@@ -16,8 +17,8 @@ export class CrewStore {
   rootFor(cwd) { return typeof cwd==='string'?this.roots.filter(r => within(cwd, r)).sort((a,b) => b.length-a.length)[0]:undefined; }
   accept(event) {
     const project = this.rootFor(event.cwd || '');
-    const kinds=['session-start','session-end','turn-start','turn-end','tool-start','tool-end','permission','input','interrupted','activity','unknown','role','observation'];
-    if (!project || !['claude','codex','cursor'].includes(event.provider) || typeof event.sessionId!=='string' || !event.sessionId || typeof event.id!=='string' || !event.id || !kinds.includes(event.kind)) return false;
+    const kinds=['session-start','session-end','turn-start','turn-end','tool-start','tool-end','permission','input','interrupted','activity','unknown','role','observation','usage'];
+    if (!project || !['claude','codex','cursor','opencode'].includes(event.provider) || typeof event.sessionId!=='string' || !event.sessionId || typeof event.id!=='string' || !event.id || !kinds.includes(event.kind)) return false;
     const dedup = `${event.provider}:${event.id}`;
     if (this.seen.has(dedup)) return false;
     this.seen.add(dedup); if (this.seen.size > 4000) this.seen.delete(this.seen.values().next().value);
@@ -30,6 +31,14 @@ export class CrewStore {
       s = { id, sessionId: clean(event.sessionId,200), provider:event.provider, project, cwd:event.cwd, startedAt:at, lastEventAt:0, state:'unknown', source:event.source, parentId:event.parentId ? `${event.provider}:${clean(event.parentId,200)}` : null, recent:[], tools:new Map(), retiredTurns:new Set(), tool:'', file:null, fileAt:null, currentFile:null, turnId:null, ended:false };
       this.sessions.set(id,s);
     }
+    if(event.kind==='usage'){
+      s.usageLedger ||= new UsageLedger();
+      if(!s.usageLedger.accept(event.usage,at,event.provider))return false;
+      s.usage=s.usageLedger.snapshot();
+      if(!s.lastEventAt)s.lastEventAt=at;
+      this.onChange?.(this.snapshot().find(item=>item.id===id),event);
+      return true;
+    }
     // Events can arrive through a replay or a second observer. Older evidence must not rewind the crew.
     if (at < s.lastEventAt&&event.kind!=='observation') return false;
     if (s.source === 'hook' && event.source !== 'hook' && at - s.lastEventAt < 30_000) return false;
@@ -41,20 +50,25 @@ export class CrewStore {
       s.workContext={category:w.category,label:clean(label,120),file,at,completed:!!w.completed,toolId:event.toolId||null};
       return true;
     };
+    const recordCheck=()=>{
+      const check=reportedCheck(event.verification?.category,event.provider);
+      if(check&&['passed','failed','interrupted','unknown'].includes(event.verification.result))s.verification=[{...check,result:event.verification.result,id:evidenceKey(dedup),at},...(s.verification||[])].slice(0,24);
+    };
     if(event.kind==='observation'){
       if(s.workContext?.at>at||at<(s.turnStartedAt||s.startedAt))return false;
       if(!recordWork())return false;
       if(!s.lastEventAt)s.lastEventAt=at;
       s.workHistory=[s.workContext,...(s.workHistory||[])].slice(0,24);
+      recordCheck();
       s.recent.unshift({id:dedup,at,kind:'observation',tool:s.workContext.label,file:s.workContext.file,source:event.source});s.recent=s.recent.slice(0,12);
-      this.onChange?.(this.snapshot().find(item=>item.id===id));return true;
+      this.onChange?.(this.snapshot().find(item=>item.id===id),event);return true;
     }
     if(event.kind==='role'){
       if(event.roleId===null)s.roleBinding=null;
       else if(typeof event.roleId==='string'&&/^[\w-]{1,100}$/.test(event.roleId))s.roleBinding={roleId:event.roleId,workflowId:clean(event.workflowId,100)||null,runId:clean(event.runId,100)||null,itemId:clean(event.itemId,180)||null,orderId:clean(event.orderId,100)||null,at};
       else return false;
       s.roleBindingAt=at;
-      this.onChange?.(this.snapshot().find(item=>item.id===id));
+      this.onChange?.(this.snapshot().find(item=>item.id===id),event);
       return true;
     }
     s.source = event.source; s.lastEventAt = at; s.project = project;
@@ -84,17 +98,18 @@ export class CrewStore {
     else if (event.kind === 'activity') { s.ended=false;s.state=activityFor(event.tool); s.tool=clean(event.tool,80);s.currentFile=observedFile; }
     else if (event.kind === 'unknown') { s.state='unknown'; }
     recordWork();
+    recordCheck();
     if(event.kind==='tool-end'&&s.workContext&&s.workContext.toolId===event.toolId&&!s.workContext.completed)s.workContext={...s.workContext,completed:true};
     if(['session-start','turn-start','turn-end','session-end','interrupted','unknown'].includes(event.kind))s.currentFile=null;
     s.recent.unshift({id:dedup,at,kind:event.kind,tool:clean(event.tool,80),file:event.file && s.file,source:event.source});
     s.recent=s.recent.slice(0,12);
     if(this.sessions.size>160) this.sessions.delete([...this.sessions.values()].sort((a,b)=>a.lastEventAt-b.lastEventAt)[0].id);
-    this.onChange?.(this.snapshot().find(item=>item.id===id));
+    this.onChange?.(this.snapshot().find(item=>item.id===id),event);
     return true;
   }
   snapshot() {
     const now=this.clock();
     for(const [id,s] of this.sessions) if(now-s.lastEventAt>24*3600_000) this.sessions.delete(id);
-    return [...this.sessions.values()].map(({tools,retiredTurns,...s})=>({...s, activeToolCount:tools.size, freshness:now-s.lastEventAt > 120_000 ? 'quiet' : 'recent'})).sort((a,b)=>b.lastEventAt-a.lastEventAt);
+    return [...this.sessions.values()].map(({tools,retiredTurns,usageLedger,...s})=>({...s, activeToolCount:tools.size, freshness:now-s.lastEventAt > 120_000 ? 'quiet' : 'recent'})).sort((a,b)=>b.lastEventAt-a.lastEventAt);
   }
 }

@@ -23,7 +23,8 @@ test('discovers an old resumed session and replays it only after its repo is sel
 test('the CLI attaches a planless repo to the existing service and replays real log events',async t=>{
  const {home,a,b,dir}=await fixture(t);await log(dir,b);const stateDir=path.join(home,'state'),office=await startOffice({roots:[a],home,stateDir,port:0});t.after(()=>office.close());
  const before=JSON.parse(await fs.readFile(path.join(stateDir,'server.json'),'utf8'));
- const {stdout}=await run(process.execPath,[cli,b,'--state-dir',stateDir,'--no-open'],{timeout:10000});assert.match(stdout,/Kitchen updated:/);
+  const {stdout}=await run(process.execPath,[cli,b,'--state-dir',stateDir,'--no-open'],{timeout:10000});assert.match(stdout,/Kitchen updated:/);
+  assert.ok(!stdout.includes(before.dashboardToken),'CLI output never prints the owner history credential');
  const printed=new URL(stdout.split('\n')[0].replace('Kitchen updated: ',''));assert.equal(printed.searchParams.get('project'),b);assert.equal(printed.searchParams.get('mode'),'live');
  const after=JSON.parse(await fs.readFile(path.join(stateDir,'server.json'),'utf8'));assert.equal(after.pid,before.pid);assert.equal(after.hookToken,before.hookToken);
  const state=await fetch(office.url+'/api/state').then(r=>r.json()),project=state.projects.find(p=>p.id===b);assert.equal(project.components.length,0);assert.equal(state.crew.filter(c=>c.project===b).length,4);assert.equal(state.executors.filter(c=>c.project===b).length,1);assert.equal(state.crew.find(c=>c.project===b&&c.workingCount).state,'reading');assert.equal(state.orders.filter(o=>o.project===b).length,1);assert.deepEqual(await fs.readdir(b),[]);

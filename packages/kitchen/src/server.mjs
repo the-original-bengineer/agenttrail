@@ -11,25 +11,31 @@ import { LogObserver } from './connectors/logs.mjs';
 import { Projects } from './agenttrail/projects.mjs';
 import {workflowCrew,workflowPlates} from './runtime/workflow-crew.mjs';
 import { hookConfig,installConfig,commandFor,configPath } from './connectors/setup.mjs';
+import { overview, historyRecord } from './observability.mjs';
+import { HistoryStore } from './history.mjs';
+import { writePrivateJson } from './private-state.mjs';
 
 const appRoot=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const hash=s=>crypto.createHash('sha256').update(s).digest('hex');
 export async function startOffice({roots,home,stateDir,port=4780,observe=true}) {
   await fs.mkdir(stateDir,{recursive:true,mode:0o700});
-  const csrf=crypto.randomBytes(24).toString('hex'),hookToken=crypto.randomBytes(24).toString('hex');
+  const csrf=crypto.randomBytes(24).toString('hex'),hookToken=crypto.randomBytes(24).toString('hex'),dashboardToken=crypto.randomBytes(24).toString('hex');
   const store=new CrewStore(roots),logs=new LogObserver(home,store,home===os.homedir()?{codexHome:process.env.CODEX_HOME||undefined,claudeHome:process.env.CLAUDE_CONFIG_DIR||undefined}:{}),projects=new Projects(roots,home,store);
+  const history=await HistoryStore.open({stateDir,home});
   const orders=new OrderStore(),plates=new PlateStore(store,Date.now,id=>orders.orders.get(id));
-  store.onChange=s=>{if(s)orders.observe(projects.snapshot(),projects.enrich([s]));};
+  store.onChange=(s,event)=>{if(s){orders.observe(projects.snapshot(),projects.enrich([s]));if(event)history.accept(historyRecord(s,event));}};
   let actualPort=port,closing=false,busy=false,lastProjects=0,lastMessage='';const clients=new Set();
   const setupCommands=Object.fromEntries(['claude','cursor'].map(p=>[p,commandFor(process.execPath,path.join(appRoot,'bin/relay.mjs'),p,stateDir)]));
   let installed={};
   async function refreshInstalled(){
     const next={};for(const root of roots){next[root]={};for(const provider of ['claude','cursor']){try{const config=JSON.parse(await fs.readFile(configPath(root,provider),'utf8'));next[root][provider]=Object.values(config.hooks||{}).flat().some(entry=>entry.command===setupCommands[provider]||entry.hooks?.some(h=>h.command===setupCommands[provider]));}catch{next[root][provider]=false;}}}installed=next;
   }
-  const snapshot=()=>{const maps=projects.snapshot(),executors=projects.enrich(store.snapshot()),ledger=plates.snapshot();return {app:'agenttrail-kitchen',version:2,recentProjects:logs.recentProjects,discoveryLimited:logs.limited,projects:maps,crew:workflowCrew(maps,executors),executors,...orders.snapshot(maps,executors),...ledger,artifacts:[...ledger.artifacts,...workflowPlates(maps)],installed,observers:{codex:{available:logs.available.codex,mode:'experimental logs'},claude:{available:logs.available.claude,mode:'hooks or logs'},cursor:{mode:'hooks'}},observing:observe};};
+  const snapshot=(authorized=false)=>{const maps=projects.snapshot(),sessions=store.snapshot(),executors=projects.enrich(sessions),ledger=plates.snapshot();return {app:'agenttrail-kitchen',version:2,recentProjects:logs.recentProjects,discoveryLimited:logs.limited,projects:maps,crew:workflowCrew(maps,executors),executors,...orders.snapshot(maps,executors),...ledger,artifacts:[...ledger.artifacts,...workflowPlates(maps)],installed,overview:overview(maps,sessions,{available:logs.available,installed,observe,limited:logs.limited}),history:authorized?{authorized:true,...history.summary()}:{authorized:false,enabled:false,retentionDays:7,count:0,truncated:false,error:'History locked. Open this dashboard using agenttrail to authorize.'},observers:{codex:{available:logs.available.codex,mode:'experimental logs'},claude:{available:logs.available.claude,mode:'hooks or logs'},cursor:{mode:'hooks'},opencode:{mode:'metadata plugin'}},observing:observe};};
+  const historyAuthorized=req=>typeof req.headers['x-history-token']==='string'&&/^[a-f0-9]{48}$/.test(req.headers['x-history-token'])&&crypto.timingSafeEqual(Buffer.from(req.headers['x-history-token']),Buffer.from(dashboardToken));
   async function tick(){if(busy||closing)return;busy=true;try{
     if(Date.now()-lastProjects>3000){lastProjects=Date.now();await projects.poll();await refreshInstalled();}
     if(observe)await logs.poll();
+    await history.flush().catch(()=>{});
     const msg=JSON.stringify(snapshot());if(msg!==lastMessage){lastMessage=msg;for(const c of clients){if(c.writableLength>256_000){c.destroy();clients.delete(c);}else c.write(`data: ${msg}\n\n`);}}
   }finally{busy=false;}}
   async function addProjects(paths){
@@ -52,6 +58,7 @@ export async function startOffice({roots,home,stateDir,port=4780,observe=true}) 
     if(req.headers.origin&&!hosts.map(h=>'http://'+h).includes(req.headers.origin))return json(res,403,{error:'Origin is not allowed.'});
     let u;try{u=new URL(req.url,origin);}catch{return json(res,400,{error:'Invalid URL.'});}
     try{
+      if(['/api/history','/api/history/settings','/api/history/clear'].includes(u.pathname)&&!historyAuthorized(req))return json(res,401,{error:'History locked. Reopen the dashboard using agenttrail.'});
       if(u.pathname==='/api/attach'){
         if(req.method!=='POST'||req.headers.authorization!==`Bearer ${hookToken}`)return json(res,403,{error:'Invalid connector key.'});
         const data=await body(req),selected=await addProjects(data.projects);return json(res,200,{app:'agenttrail-kitchen',projects:selected});
@@ -64,6 +71,12 @@ export async function startOffice({roots,home,stateDir,port=4780,observe=true}) 
       if(req.method==='POST'){
         if(req.headers['x-office-token']!==csrf)return json(res,403,{error:'Reload the office before changing settings.'});
         const data=await body(req);
+        if(u.pathname==='/api/history/settings'){
+          const summary=await history.configure({enabled:data.enabled,retentionDays:data.retentionDays});await tick();return json(res,200,summary);
+        }
+        if(u.pathname==='/api/history/clear'){
+          const summary=await history.clear();await tick();return json(res,200,summary);
+        }
         if(u.pathname==='/api/projects'){
           const [id]=await addProjects([data.path]);return json(res,200,{id});
         }
@@ -77,8 +90,9 @@ export async function startOffice({roots,home,stateDir,port=4780,observe=true}) 
         return json(res,404,{error:'Unknown action.'});
       }
       if(req.method!=='GET')return json(res,405,{error:'Method not allowed.'});
-      if(u.pathname==='/api/bootstrap')return json(res,200,{token:csrf,...snapshot()});
-      if(u.pathname==='/api/state')return json(res,200,snapshot());
+      if(u.pathname==='/api/bootstrap')return json(res,200,{token:csrf,...snapshot(historyAuthorized(req))});
+      if(u.pathname==='/api/state')return json(res,200,snapshot(historyAuthorized(req)));
+      if(u.pathname==='/api/history')return json(res,200,history.snapshot({project:u.searchParams.get('project')||'',provider:u.searchParams.get('provider')||'',session:u.searchParams.get('session')||'',limit:u.searchParams.has('limit')?Number(u.searchParams.get('limit')):200}));
       if(u.pathname==='/api/events'){
         res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache','connection':'keep-alive'});res.write(`data: ${JSON.stringify(snapshot())}\n\n`);clients.add(res);req.on('close',()=>clients.delete(res));return;
       }
@@ -94,7 +108,7 @@ export async function startOffice({roots,home,stateDir,port=4780,observe=true}) 
   await new Promise((resolve,reject)=>{
     let attempts=0;const fail=e=>{if(e.code==='EADDRINUSE'&&++attempts<20){actualPort++;server.listen(actualPort,'127.0.0.1');}else reject(e);};server.on('error',fail);server.once('listening',()=>{server.off('error',fail);actualPort=server.address().port;resolve();});server.listen(actualPort,'127.0.0.1');
   });
-  await fs.writeFile(path.join(stateDir,'server.json'),JSON.stringify({port:actualPort,hookToken,pid:process.pid}),{mode:0o600});
+  try{await writePrivateJson({stateDir,home,name:'server.json',maxBytes:4096,value:{port:actualPort,hookToken,dashboardToken,pid:process.pid}});}catch(error){projects.close();await new Promise(resolve=>server.close(resolve));throw error;}
   await tick();const timer=setInterval(()=>tick().catch(()=>{}),1000),heartbeat=setInterval(()=>{for(const c of clients)c.write(': heartbeat\n\n');},15000);
-  return {url:`http://127.0.0.1:${actualPort}`,store,snapshot,async close(){closing=true;clearInterval(timer);clearInterval(heartbeat);projects.close();for(const c of clients)c.end();await new Promise(r=>server.close(r));try{const reg=JSON.parse(await fs.readFile(path.join(stateDir,'server.json'),'utf8'));if(reg.hookToken===hookToken)await fs.unlink(path.join(stateDir,'server.json'));}catch{}}};
+  return {url:`http://127.0.0.1:${actualPort}`,store,snapshot,async close(){closing=true;clearInterval(timer);clearInterval(heartbeat);projects.close();for(const c of clients)c.end();await new Promise(r=>server.close(r));await history.flush().catch(()=>{});try{const reg=JSON.parse(await fs.readFile(path.join(stateDir,'server.json'),'utf8'));if(reg.hookToken===hookToken)await fs.unlink(path.join(stateDir,'server.json'));}catch{}}};
 }
